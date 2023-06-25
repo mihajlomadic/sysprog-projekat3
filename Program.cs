@@ -17,7 +17,7 @@ string[] prefixes = new[] { "http://localhost:8080/", "http://127.0.0.1:8080/" }
 
 ReactiveHttpServer server = new(pat, 100, prefixes, TaskPoolScheduler.Default);
 
-server.Launch();
+using var serverDisposable = server.Launch();
 
 Console.WriteLine("Press any key to exit...");
 

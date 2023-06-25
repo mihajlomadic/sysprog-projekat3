@@ -32,4 +32,7 @@ internal class ReactiveGitHubSearchClient
             Order = SortDirection.Descending,
             SortField = RepoSearchSort.Stars
         });
+
+    public ApiInfo GetApiInfo()
+        => _gitHubClient.GetLastApiInfo();
 }

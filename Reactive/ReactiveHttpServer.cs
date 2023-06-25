@@ -2,6 +2,7 @@ using DTO;
 using System.Net;
 using System.Reactive;
 using System.Reactive.Concurrency;
+using System.Reactive.Disposables;
 using System.Reactive.Linq;
 using System.Reactive.Subjects;
 using System.Text;
@@ -38,7 +39,7 @@ public class ReactiveHttpServer
         _httpListener = new ReactiveHttpListener(prefixes, listeningScheduler ?? TaskPoolScheduler.Default);
     }
 
-    public void Launch()
+    public IDisposable Launch()
     {
         var httpListenerSub = _httpListener
             .TakeUntil(_exitSubject)
@@ -167,12 +168,19 @@ public class ReactiveHttpServer
                         responseBody.Length
                     );
 
-                    Console.WriteLine($"RESPONSE:\n{responseLog}\tSent on thread {Thread.CurrentThread.ManagedThreadId}\n====================================\n");
+                    Console.WriteLine($"RESPONSE:\n{responseLog}\tSent on thread {Thread.CurrentThread.ManagedThreadId}\nRequests left in next minute: {
+                        _gitHubSearchClient.GetApiInfo()?.RateLimit.Remaining}\n====================================\n");
 
                     _ = SendResponse(context, responseBody, "application/json");
                 },
                 onError: ex => HandleError(ex)
             );
+
+        return Disposable.Create(() =>
+        {
+            httpListenerSub.Dispose();
+            sendResponseSub.Dispose();
+        });
     }
 
     public void Terminate()
