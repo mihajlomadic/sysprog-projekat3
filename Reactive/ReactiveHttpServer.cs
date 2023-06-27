@@ -1,3 +1,4 @@
+using Caching;
 using DTO;
 using System.Net;
 using System.Reactive;
@@ -21,41 +22,37 @@ public class ReactiveHttpServer
 
     private readonly object _consoleWriteLock = new();
 
-    private readonly Subject<Unit> _exitSubject = new();
+    private readonly Subject<Unit> _terminator = new();
 
-    private readonly Subject<ContextTopicDTO> _sendResponseSubject = new();
+    private readonly Subject<ContextTopicDTO> _handler = new();
 
-    private ReactiveGitHubSearchClient _gitHubSearchClient;
+    private ReactiveGitHubSearchClient _gitHubClient;
 
-    private ReactiveHttpListener _httpListener;
+    private ReactiveHttpListener _listener;
+
+    private ReaderWriterLRUCache<string, List<Repo>> _cache;
 
     public ReactiveHttpServer(
         string gitHubPAT,
         int resultsPerPage,
         string[] prefixes,
-        IScheduler? listeningScheduler = null)
+        IScheduler? listeningScheduler = null,
+        IScheduler? handlingScheduler = null)
     {
-        _gitHubSearchClient = new ReactiveGitHubSearchClient(gitHubPAT, resultsPerPage);
-        _httpListener = new ReactiveHttpListener(prefixes, listeningScheduler ?? TaskPoolScheduler.Default);
+        _gitHubClient = new ReactiveGitHubSearchClient(gitHubPAT, resultsPerPage);
+        _listener = new ReactiveHttpListener(prefixes, listeningScheduler ?? new EventLoopScheduler());
+        _handler.SubscribeOn(handlingScheduler ?? TaskPoolScheduler.Default);
+        _cache = new ReaderWriterLRUCache<string, List<Repo>>(30);
     }
 
     public IDisposable Launch()
     {
-        var httpListenerSub = _httpListener
-            .TakeUntil(_exitSubject)
-            // Logging request info
+        var httpListenerSub = _listener
+            .TakeUntil(_terminator)
+            // Thread info
             .Do(context =>
             {
-                string requestLog = string.Format(
-                    "{0} {1} HTTP/{2}\nHost: {3}\nUser-agent: {4}\n",
-                    context.Request.HttpMethod,
-                    context.Request.RawUrl,
-                    context.Request.ProtocolVersion,
-                    context.Request.UserHostName,
-                    context.Request.UserAgent
-                );
-
-                Console.WriteLine($"REQUEST:\n{requestLog}\tReceived on thread {Thread.CurrentThread.ManagedThreadId}\n====================================\n");
+                Console.WriteLine($"Got request on thread: {Thread.CurrentThread.ManagedThreadId}");
             })
             // Request validation 
             // - Request method must be GET
@@ -109,9 +106,8 @@ public class ReactiveHttpServer
             .Do(contextTopicDto =>
             {
                 if (contextTopicDto != null)
-                    _sendResponseSubject.OnNext(contextTopicDto);
+                    _handler.OnNext(contextTopicDto);
             })
-            .SubscribeOn(new EventLoopScheduler())
             .Subscribe(
                 onNext: _ => { },
                 onError: ex => HandleError(ex),
@@ -126,50 +122,55 @@ public class ReactiveHttpServer
                 }
             );
 
-        var sendResponseSub = _sendResponseSubject
-            .TakeUntil(_exitSubject)
+        var sendResponseSub = _handler
+            .TakeUntil(_terminator)
             .SelectMany(contextTopicDto =>
             {
-                return _gitHubSearchClient.SearchReposByTopic(contextTopicDto.Topic)
-                    .Select(searchResult =>
+                List<Repo>? repos = null;
+                if (_cache.TryRead(contextTopicDto.Topic, out repos))
+                {
+                    return Observable.Return(new ContextReposDTO
                     {
-                        List<Repo> repos = new();
-                        foreach (var repo in searchResult.Items)
-                        {
-                            repos.Add(new Repo
-                            {
-                                Name = repo.Name,
-                                Description = repo.Description,
-                                Url = repo.Url,
-                                StarsCount = repo.StargazersCount,
-                                ForksCount = repo.ForksCount,
-                            });
-                        }
-                        return new ContextReposDTO
-                        {
-                            Context = contextTopicDto.Context,
-                            Repos = repos
-                        };
+                        Context = contextTopicDto.Context,
+                        Repos = repos
                     });
+                }
+                else
+                {
+                    return _gitHubClient.SearchReposByTopic(contextTopicDto.Topic)
+                        .Select(searchResult => 
+                        {
+                            return searchResult.Items
+                                .AsParallel()
+                                // .WithDegreeOfParallelism(Environment.ProcessorCount)
+                                .Select(repo => new Repo
+                                {
+                                    Name = repo.Name,
+                                    Description = repo.Description,
+                                    Url = repo.Url,
+                                    StarsCount = repo.StargazersCount,
+                                    ForksCount = repo.ForksCount,
+                                })
+                                .ToList();
+                        })
+                        .Select(processedRepos =>
+                        {
+                            // caching repos for topic
+                            _cache.Write(contextTopicDto.Topic, processedRepos);
+                            return new ContextReposDTO
+                            {
+                                Context = contextTopicDto.Context,
+                                Repos = processedRepos
+                            };
+                        });
+                }
             })
-            .SubscribeOn(Scheduler.Default)
             .Subscribe(
                 onNext: contextReposDto =>
                 {
                     var context = contextReposDto.Context;
                     var repos = contextReposDto.Repos;
                     var responseBody = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(repos));
-
-                    string responseLog = string.Format(
-                        "Status: {0}\nDate: {1}\nContent-Type: {2}\nContent-Length: {3}\n",
-                        context.Response.StatusCode,
-                        DateTime.Now,
-                        context.Response.ContentType,
-                        responseBody.Length
-                    );
-
-                    Console.WriteLine($"RESPONSE:\n{responseLog}\tSent on thread {Thread.CurrentThread.ManagedThreadId}\nRequests left in next minute: {
-                        _gitHubSearchClient.GetApiInfo()?.RateLimit.Remaining}\n====================================\n");
 
                     _ = SendResponse(context, responseBody, "application/json");
                 },
@@ -185,8 +186,8 @@ public class ReactiveHttpServer
 
     public void Terminate()
     {
-        _exitSubject.OnNext(Unit.Default);
-        _exitSubject.OnCompleted();
+        _terminator.OnNext(Unit.Default);
+        _terminator.OnCompleted();
 
         lock (_consoleWriteLock)
         {
@@ -217,13 +218,43 @@ public class ReactiveHttpServer
         HttpListenerContext context,
         byte[] responseBody,
         string contentType,
-        HttpStatusCode statusCode = HttpStatusCode.OK
-    )
+        HttpStatusCode statusCode = HttpStatusCode.OK)
     {
         context.Response.ContentType = contentType;
         context.Response.StatusCode = (int)statusCode;
         context.Response.ContentLength64 = responseBody.Length;
         using (var outputStream = context.Response.OutputStream)
             await outputStream.WriteAsync(responseBody, 0, responseBody.Length);
+        Log(context);
+    }
+
+    private void Log(HttpListenerContext context)
+    {
+        string requestLog = string.Format(
+            "{0} {1} HTTP/{2}\nHost: {3}\nUser-agent: {4}\n",
+            context.Request.HttpMethod,
+            context.Request.RawUrl,
+            context.Request.ProtocolVersion,
+            context.Request.UserHostName,
+            context.Request.UserAgent
+        );
+
+        string responseLog = string.Format(
+            "Status: {0}\nDate: {1}\nContent-Type: {2}\nContent-Length: {3}\n",
+            context.Response.StatusCode,
+            DateTime.Now,
+            context.Response.ContentType,
+            context.Response.ContentLength64
+        );
+
+        StringBuilder sb = new StringBuilder();
+
+        sb.Append("\n====================================\n");
+        sb.Append($"Handle started on thread {Thread.CurrentThread.ManagedThreadId}\n");
+        sb.Append($"REQUEST:\n{requestLog}\nRESPONSE:\n{responseLog}");
+        sb.Append($"API calls left: {_gitHubClient.GetApiInfo().RateLimit.Remaining}\n");
+        sb.Append("\n====================================\n");
+
+        Console.WriteLine(sb.ToString());
     }
 }

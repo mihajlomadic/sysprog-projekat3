@@ -23,15 +23,12 @@ public class ReactiveHttpListener : IObservable<HttpListenerContext>
     {
         _listener.Start();
 
-        lock (new object())
-        {
-            Console.ForegroundColor = ConsoleColor.Green;
-            Console.WriteLine($"\nServer started listening on thread: {Thread.CurrentThread.ManagedThreadId}");
-            Console.WriteLine($"[\n\t{string.Join("\n\t", _listener.Prefixes)}\n];");
-            Console.ResetColor();
-        }
+        Console.ForegroundColor = ConsoleColor.Green;
+        Console.WriteLine($"\nServer started listening on thread: {Thread.CurrentThread.ManagedThreadId}");
+        Console.WriteLine($"[\n\t{string.Join("\n\t", _listener.Prefixes)}\n];");
+        Console.ResetColor();
 
-        var _ = GetContextObservable(observer);
+        var _ = ObserveContextAsync(observer);
 
         return Disposable.Create(() =>
         {
@@ -40,7 +37,7 @@ public class ReactiveHttpListener : IObservable<HttpListenerContext>
         });
     }
 
-    private async Task GetContextObservable(IObserver<HttpListenerContext> observer)
+    private async Task ObserveContextAsync(IObserver<HttpListenerContext> observer)
     {
         try
         {

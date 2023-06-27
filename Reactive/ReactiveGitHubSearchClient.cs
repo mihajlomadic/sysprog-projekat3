@@ -11,7 +11,7 @@ internal class ReactiveGitHubSearchClient
 
     private int perPage = 1000;
 
-    public ReactiveGitHubSearchClient(string? personalAccessToken, int perPage = 100)
+    public ReactiveGitHubSearchClient(string? personalAccessToken, int perPage)
     {
         if (personalAccessToken == null)
             throw new ArgumentNullException("GitHub PAT is null!");
@@ -22,6 +22,8 @@ internal class ReactiveGitHubSearchClient
         };
 
         _observableGitHubClient = new(_gitHubClient);
+
+        this.perPage = perPage;
     }
 
     public IObservable<SearchRepositoryResult> SearchReposByTopic(string topic)
@@ -33,6 +35,5 @@ internal class ReactiveGitHubSearchClient
             SortField = RepoSearchSort.Stars
         });
 
-    public ApiInfo GetApiInfo()
-        => _gitHubClient.GetLastApiInfo();
+    public ApiInfo GetApiInfo() => _gitHubClient.GetLastApiInfo();
 }
