@@ -24,12 +24,11 @@ public class ReactiveHttpServer
 
     private readonly Subject<Unit> _terminator = new();
 
-    private readonly ISubject<ContextTopicDTO> _handler 
-        = Subject.Synchronize(new Subject<ContextTopicDTO>());
+    private readonly ISubject<ContextTopicDTO> _handler = new Subject<ContextTopicDTO>();
 
     private ReactiveGitHubSearchClient _gitHubClient;
 
-    private IObservable<HttpListenerContext> _listener;
+    private ReactiveHttpListener _listener;
 
     private ReaderWriterLRUCache<string, List<Repo>> _cache;
 
@@ -41,9 +40,8 @@ public class ReactiveHttpServer
         IScheduler? handlingScheduler = null)
     {
         _gitHubClient = new ReactiveGitHubSearchClient(gitHubPAT, resultsPerPage);
-        _listener = new ReactiveHttpListener(prefixes, listeningScheduler 
-            ?? new EventLoopScheduler()).Synchronize();
-        _handler.SubscribeOn(handlingScheduler ?? TaskPoolScheduler.Default);
+        _listener = new ReactiveHttpListener(prefixes, listeningScheduler ?? Scheduler.Default);
+        _handler.ObserveOn(handlingScheduler ?? TaskPoolScheduler.Default);
         _cache = new ReaderWriterLRUCache<string, List<Repo>>(30);
     }
 
@@ -126,6 +124,7 @@ public class ReactiveHttpServer
 
         var sendResponseSub = _handler
             .TakeUntil(_terminator)
+            .Do(_ => Console.WriteLine($"Handling request on thread: {Thread.CurrentThread.ManagedThreadId}"))
             .SelectMany(contextTopicDto =>
             {
                 List<Repo>? repos = null;
