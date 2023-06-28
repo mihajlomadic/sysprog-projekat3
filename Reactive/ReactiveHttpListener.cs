@@ -1,4 +1,5 @@
 using System.Net;
+using System.Reactive;
 using System.Reactive.Concurrency;
 using System.Reactive.Disposables;
 using System.Reactive.Linq;
@@ -39,12 +40,13 @@ public class ReactiveHttpListener : IObservable<HttpListenerContext>
 
     private async Task ObserveContextAsync(IObserver<HttpListenerContext> observer)
     {
+        var syncObserver = Observer.Synchronize(observer);
         try
         {
             while (_listener.IsListening)
             {
                 HttpListenerContext context = await _listener.GetContextAsync();
-                _scheduler.Schedule(() => observer.OnNext(context));
+                _scheduler.Schedule(() => syncObserver.OnNext(context));
             }
         }
         catch (Exception ex)

@@ -9,7 +9,7 @@ internal class ReactiveGitHubSearchClient
     private GitHubClient _gitHubClient;
     private ObservableGitHubClient _observableGitHubClient;
 
-    private int perPage = 1000;
+    private int perPage;
 
     public ReactiveGitHubSearchClient(string? personalAccessToken, int perPage)
     {

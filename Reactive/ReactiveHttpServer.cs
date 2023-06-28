@@ -24,11 +24,12 @@ public class ReactiveHttpServer
 
     private readonly Subject<Unit> _terminator = new();
 
-    private readonly Subject<ContextTopicDTO> _handler = new();
+    private readonly ISubject<ContextTopicDTO> _handler 
+        = Subject.Synchronize(new Subject<ContextTopicDTO>());
 
     private ReactiveGitHubSearchClient _gitHubClient;
 
-    private ReactiveHttpListener _listener;
+    private IObservable<HttpListenerContext> _listener;
 
     private ReaderWriterLRUCache<string, List<Repo>> _cache;
 
@@ -40,7 +41,8 @@ public class ReactiveHttpServer
         IScheduler? handlingScheduler = null)
     {
         _gitHubClient = new ReactiveGitHubSearchClient(gitHubPAT, resultsPerPage);
-        _listener = new ReactiveHttpListener(prefixes, listeningScheduler ?? new EventLoopScheduler());
+        _listener = new ReactiveHttpListener(prefixes, listeningScheduler 
+            ?? new EventLoopScheduler()).Synchronize();
         _handler.SubscribeOn(handlingScheduler ?? TaskPoolScheduler.Default);
         _cache = new ReaderWriterLRUCache<string, List<Repo>>(30);
     }
@@ -256,5 +258,6 @@ public class ReactiveHttpServer
         sb.Append("\n====================================\n");
 
         Console.WriteLine(sb.ToString());
+        Console.Out.Flush();
     }
 }
